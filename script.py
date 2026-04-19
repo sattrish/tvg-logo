@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw
 from io import BytesIO
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE = "https://tulnit.com"
 HOME = BASE + "/"
@@ -16,21 +17,25 @@ JSON_FILE = "logos.json"
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
+session = requests.Session()
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+MAX_THREADS = 15  # ⚡ speed control (10–20 best)
+
 downloaded_hashes = set()
 logo_map = {}
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0"
-}
 
 # 🔐 hash
 def get_hash(content):
     return hashlib.md5(content).hexdigest()
 
+# 🧹 clean name
+def slugify(text):
+    return text.strip().lower().replace(" ", "-")
+
 # 📂 get categories
 def get_categories():
-    print("Fetching categories...")
-    res = requests.get(HOME, headers=HEADERS, timeout=10)
+    res = session.get(HOME, headers=HEADERS, timeout=10)
     soup = BeautifulSoup(res.text, "html.parser")
 
     categories = {}
@@ -45,10 +50,10 @@ def get_categories():
             if full_url not in categories.values():
                 categories[name] = full_url
 
-    print(f"Total categories: {len(categories)}")
+    print(f"Categories: {len(categories)}")
     return categories
 
-# 🔢 get total pages from "Page 1 of X"
+# 🔢 total pages detect
 def get_total_pages(soup):
     el = soup.select_one(".pagination span")
     if el:
@@ -57,38 +62,46 @@ def get_total_pages(soup):
             return int(match.group(1))
     return 1
 
-# 🔗 generate all page links
+# 🔗 generate pages
 def get_all_pages(base_url, total):
-    urls = [base_url]
-    for i in range(2, total + 1):
-        urls.append(f"{base_url}page/{i}/")
-    return urls
+    return [base_url] + [f"{base_url}page/{i}/" for i in range(2, total+1)]
 
 # 🖼️ scrape images
 def scrape_page(url):
-    print(f"Scraping: {url}")
-    res = requests.get(url, headers=HEADERS, timeout=10)
-    soup = BeautifulSoup(res.text, "html.parser")
+    try:
+        res = session.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(res.text, "html.parser")
 
-    images = []
-    for img in soup.select("article .poster img"):
-        src = img.get("src")
-        name = img.get("alt", "logo").strip().replace(" ", "-").lower()
-        if src:
-            images.append((src, name))
+        images = []
+        for img in soup.select("article .poster img"):
+            src = img.get("src")
+            name = img.get("alt", "logo").strip().replace(" ", "-").lower()
+            if src:
+                images.append((src, name))
 
-    return images, soup
+        return images, soup
+    except:
+        return [], None
 
 # 🎨 process image
-def process_image(url, name):
+def process_image(url, name, category_folder):
     try:
-        res = requests.get(url, headers=HEADERS, timeout=10)
+        filename = f"{name}.png"
+        folder_path = os.path.join(SAVE_DIR, category_folder)
+        os.makedirs(folder_path, exist_ok=True)
+
+        path = os.path.join(folder_path, filename)
+
+        # ⚡ skip existing
+        if os.path.exists(path):
+            return (name, path)
+
+        res = session.get(url, headers=HEADERS, timeout=10)
         content = res.content
 
-        # duplicate check
+        # duplicate
         h = get_hash(content)
         if h in downloaded_hashes:
-            print("Duplicate skipped")
             return None
         downloaded_hashes.add(h)
 
@@ -108,45 +121,60 @@ def process_image(url, name):
         draw.ellipse((0, 0, 512, 512), fill=255)
         img.putalpha(mask)
 
-        filename = f"{name}.png"
-        path = os.path.join(SAVE_DIR, filename)
         img.save(path, "PNG")
 
-        print(f"Saved: {filename}")
-        return filename
+        print("Saved:", path)
+        return (name, path)
 
     except Exception as e:
         print("Error:", e)
         return None
 
+# ⚡ parallel processing
+def process_images_parallel(images, category_folder):
+    results = []
+
+    with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
+        futures = [
+            executor.submit(process_image, img_url, name, category_folder)
+            for img_url, name in images
+        ]
+
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                results.append(result)
+
+    return results
+
 # 🚀 crawl category
 def crawl_category(cat_name, url):
     print(f"\n=== {cat_name} ===")
 
-    logo_map[cat_name] = {}
+    cat_slug = slugify(cat_name)
+    logo_map[cat_slug] = {}
 
-    # first page load
-    res = requests.get(url, headers=HEADERS, timeout=10)
-    soup = BeautifulSoup(res.text, "html.parser")
+    images, soup = scrape_page(url)
+    if not soup:
+        return
 
     total_pages = get_total_pages(soup)
-    print(f"Total pages: {total_pages}")
+    print(f"Pages: {total_pages}")
 
-    page_links = get_all_pages(url, total_pages)
+    pages = get_all_pages(url, total_pages)
 
-    for page in page_links:
+    for page in pages:
         images, _ = scrape_page(page)
 
-        for img_url, name in images:
-            filename = process_image(img_url, name)
-            if filename:
-                logo_map[cat_name][name] = f"{SAVE_DIR}/{filename}"
+        results = process_images_parallel(images, cat_slug)
 
-# 💾 save json
+        for name, path in results:
+            logo_map[cat_slug][name] = path
+
+# 💾 save JSON
 def save_json():
     with open(JSON_FILE, "w") as f:
         json.dump(logo_map, f, indent=2)
-    print("\nJSON saved")
 
 # ▶️ main
 def main():
@@ -156,6 +184,7 @@ def main():
         crawl_category(name, url)
 
     save_json()
+    print("\nDone ✅")
 
 if __name__ == "__main__":
     main()
