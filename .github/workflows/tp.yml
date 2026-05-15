@@ -15,14 +15,14 @@ jobs:
     steps:
 
       # =========================
-      # CHECKOUT REPOSITORY
+      # CHECKOUT REPO
       # =========================
 
       - name: Checkout Repository
         uses: actions/checkout@v4
 
       # =========================
-      # SETUP PYTHON
+      # PYTHON SETUP
       # =========================
 
       - name: Setup Python
@@ -31,12 +31,12 @@ jobs:
           python-version: "3.x"
 
       # =========================
-      # INSTALL DEPENDENCIES
+      # INSTALL LIBRARIES
       # =========================
 
       - name: Install Dependencies
         run: |
-          pip install requests beautifulsoup4 lxml
+          pip install requests beautifulsoup4 lxml cloudscraper
 
       # =========================
       # RUN SCRAPER
@@ -50,31 +50,51 @@ jobs:
           import os
           import re
           import json
+          import time
           import requests
+          import cloudscraper
 
           from bs4 import BeautifulSoup
           from urllib.parse import urlparse
 
           # ====================================
-          # WEBSITE URL
+          # WEBSITE
           # ====================================
 
           URL = "https://dev.denver69.fun/TP/"
-
-          # ====================================
-          # OUTPUT FILES
-          # ====================================
 
           IMAGE_DIR = "images"
           JSON_FILE = "tp.json"
 
           # ====================================
-          # REQUEST HEADERS
+          # BROWSER HEADERS
           # ====================================
 
           headers = {
-              "User-Agent": "Mozilla/5.0"
+              "User-Agent": (
+                  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/136.0.0.0 Safari/537.36"
+              ),
+              "Accept": "*/*",
+              "Accept-Language": "en-US,en;q=0.9",
+              "Connection": "keep-alive",
+              "Referer": "https://google.com/"
           }
+
+          # ====================================
+          # CLOUDSCRAPER SESSION
+          # ====================================
+
+          scraper = cloudscraper.create_scraper(
+              browser={
+                  "browser": "chrome",
+                  "platform": "windows",
+                  "mobile": False
+              }
+          )
+
+          scraper.headers.update(headers)
 
           # ====================================
           # FETCH WEBSITE
@@ -82,15 +102,44 @@ jobs:
 
           print("Fetching Website...")
 
-          response = requests.get(
-              URL,
-              headers=headers,
-              timeout=30
-          )
+          html = None
 
-          response.raise_for_status()
+          for attempt in range(5):
 
-          html = response.text
+              try:
+
+                  response = scraper.get(
+                      URL,
+                      timeout=60
+                  )
+
+                  if response.status_code == 200:
+
+                      html = response.text
+
+                      print("Website Loaded Successfully")
+
+                      break
+
+                  else:
+
+                      print(
+                          f"HTTP {response.status_code}"
+                      )
+
+              except Exception as e:
+
+                  print(
+                      f"Retry {attempt+1}: {e}"
+                  )
+
+                  time.sleep(5)
+
+          if not html:
+
+              raise Exception(
+                  "Failed to fetch website"
+              )
 
           # ====================================
           # PARSE HTML
@@ -108,10 +157,6 @@ jobs:
 
           print(f"Found {len(cards)} channels")
 
-          # ====================================
-          # JSON ARRAY
-          # ====================================
-
           channels = []
 
           # ====================================
@@ -120,10 +165,8 @@ jobs:
 
           def clean_filename(name):
 
-              # REMOVE SPACES
               name = name.replace(" ", "")
 
-              # REMOVE INVALID CHARS
               name = re.sub(
                   r'[\\\\/:*?"<>|]',
                   '',
@@ -133,7 +176,7 @@ jobs:
               return name.strip()
 
           # ====================================
-          # CLEAN FOLDER NAME
+          # CLEAN FOLDER
           # ====================================
 
           def clean_folder(name):
@@ -154,19 +197,13 @@ jobs:
 
               try:
 
-                  # ===============================
                   # CHANNEL ID
-                  # ===============================
-
                   channel_id = card.get(
                       "data-id",
                       ""
                   ).strip()
 
-                  # ===============================
-                  # CHANNEL GENRE
-                  # ===============================
-
+                  # GENRE
                   genre = clean_folder(
                       card.get(
                           "data-genre",
@@ -174,10 +211,7 @@ jobs:
                       )
                   )
 
-                  # ===============================
                   # CHANNEL NAME
-                  # ===============================
-
                   name_tag = card.find(
                       "div",
                       class_="channel-name"
@@ -188,10 +222,7 @@ jobs:
 
                   channel_name = name_tag.text.strip()
 
-                  # ===============================
-                  # IMAGE TAG
-                  # ===============================
-
+                  # IMAGE
                   img_tag = card.find(
                       "img",
                       class_="channel-logo"
@@ -205,18 +236,12 @@ jobs:
                   if not image_url:
                       continue
 
-                  # ===============================
-                  # CLEAN FILE NAME
-                  # ===============================
-
+                  # CLEAN NAME
                   clean_name = clean_filename(
                       channel_name
                   )
 
-                  # ===============================
-                  # CREATE GENRE FOLDER
-                  # ===============================
-
+                  # CREATE FOLDER
                   genre_path = os.path.join(
                       IMAGE_DIR,
                       genre
@@ -227,10 +252,7 @@ jobs:
                       exist_ok=True
                   )
 
-                  # ===============================
-                  # FILE EXTENSION
-                  # ===============================
-
+                  # EXTENSION
                   parsed = urlparse(image_url)
 
                   ext = os.path.splitext(
@@ -240,56 +262,38 @@ jobs:
                   if not ext:
                       ext = ".png"
 
-                  # ===============================
-                  # FINAL FILE NAME
-                  # ===============================
-
+                  # FINAL FILE
                   filename = f"{clean_name}{ext}"
-
-                  # ===============================
-                  # SAVE PATH
-                  # ===============================
 
                   save_path = os.path.join(
                       genre_path,
                       filename
                   )
 
-                  # ===============================
-                  # DOWNLOAD IMAGE
-                  # ===============================
-
-                  print(f"Downloading: {channel_name}")
-
-                  img_response = requests.get(
-                      image_url,
-                      headers=headers,
-                      timeout=30
+                  print(
+                      f"Downloading: {channel_name}"
                   )
 
-                  if img_response.status_code == 200:
+                  # DOWNLOAD IMAGE
+                  img = scraper.get(
+                      image_url,
+                      timeout=60
+                  )
+
+                  if img.status_code == 200:
 
                       with open(
                           save_path,
                           "wb"
                       ) as f:
 
-                          f.write(
-                              img_response.content
-                          )
-
-                      # ===========================
-                      # LOCAL IMAGE PATH
-                      # ===========================
+                          f.write(img.content)
 
                       local_image = (
                           f"images/{genre}/{filename}"
                       )
 
-                      # ===========================
-                      # ADD JSON ENTRY
-                      # ===========================
-
+                      # JSON DATA
                       channels.append({
 
                           "id": channel_id,
@@ -311,7 +315,7 @@ jobs:
                   else:
 
                       print(
-                          f"Failed: {image_url}"
+                          f"Image Failed: {image_url}"
                       )
 
               except Exception as e:
@@ -321,7 +325,7 @@ jobs:
                   )
 
           # ====================================
-          # SAVE JSON FILE
+          # SAVE JSON
           # ====================================
 
           with open(
@@ -336,10 +340,6 @@ jobs:
                   indent=2,
                   ensure_ascii=False
               )
-
-          # ====================================
-          # DONE
-          # ====================================
 
           print(
               f"Saved {len(channels)} channels"
@@ -361,6 +361,6 @@ jobs:
 
           git add images/ tp.json
 
-          git diff --cached --quiet || git commit -m "Updated channel logos and JSON API"
+          git diff --cached --quiet || git commit -m "Updated channels API"
 
           git push
