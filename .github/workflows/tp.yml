@@ -1,0 +1,119 @@
+name: Download Channel Logos
+
+on:
+  workflow_dispatch:
+  
+permissions:
+  contents: write
+
+jobs:
+  download-logos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install Dependencies
+        run: |
+          pip install requests beautifulsoup4 lxml
+
+      - name: Run Downloader
+        run: |
+          cat > downloader.py << 'EOF'
+          import os
+          import re
+          import requests
+          from bs4 import BeautifulSoup
+          from urllib.parse import urlparse
+
+          URL = "https://dev.denver69.fun/TP/"
+          BASE_DIR = "images"
+
+          headers = {
+              "User-Agent": "Mozilla/5.0"
+          }
+
+          response = requests.get(URL, headers=headers, timeout=30)
+          response.raise_for_status()
+
+          soup = BeautifulSoup(response.text, "lxml")
+
+          cards = soup.find_all("div", class_="channel-card")
+
+          print(f"Found {len(cards)} channels")
+
+          def clean_name(name):
+              # Remove spaces
+              name = name.replace(" ", "")
+
+              # Remove invalid filename chars
+              name = re.sub(r'[\\\\/:*?"<>|]', '', name)
+
+              return name.strip()
+
+          for card in cards:
+              try:
+                  genre = card.get("data-genre", "Unknown").strip()
+                  genre = re.sub(r'[\\\\/:*?"<>|]', '', genre)
+
+                  channel_name_tag = card.find("div", class_="channel-name")
+                  img_tag = card.find("img", class_="channel-logo")
+
+                  if not channel_name_tag or not img_tag:
+                      continue
+
+                  channel_name = channel_name_tag.text.strip()
+                  image_url = img_tag.get("src")
+
+                  if not image_url:
+                      continue
+
+                  clean_channel_name = clean_name(channel_name)
+
+                  # Create folder
+                  genre_path = os.path.join(BASE_DIR, genre)
+                  os.makedirs(genre_path, exist_ok=True)
+
+                  # Get image extension
+                  parsed = urlparse(image_url)
+                  ext = os.path.splitext(parsed.path)[1]
+
+                  if not ext:
+                      ext = ".png"
+
+                  filename = f"{clean_channel_name}{ext}"
+
+                  save_path = os.path.join(genre_path, filename)
+
+                  print(f"Downloading: {channel_name}")
+                  print(f"Saving to: {save_path}")
+
+                  img_response = requests.get(image_url, headers=headers, timeout=30)
+
+                  if img_response.status_code == 200:
+                      with open(save_path, "wb") as f:
+                          f.write(img_response.content)
+
+              except Exception as e:
+                  print("Error:", e)
+
+          EOF
+
+          python downloader.py
+
+      - name: Commit and Push Images
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add images/
+
+          git diff --cached --quiet || git commit -m "Updated channel logos"
+
+          git push
